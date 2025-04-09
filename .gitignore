@@ -1,2 +1,8 @@
 *.pptx
 *.pyc
+data/logs/model/*
+data/model/*
+results/*
+figures/*
+models/*
+*.txt

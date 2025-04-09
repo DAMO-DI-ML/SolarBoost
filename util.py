@@ -1,4 +1,6 @@
 import numpy as np
+import os
+import pickle
 
             
 def RCR(ytrue, ypred, cap, threshold=0):
@@ -101,6 +103,22 @@ class KalmanFilter:
             measurements.append(z)
         return measurements
 
-
+def load_or_train_model(model_path, train_func, *args, **kwargs):
+    """Load existing model if available, otherwise train new one"""
+    if os.path.exists(model_path):
+        with open(model_path, 'rb') as f:
+            model = pickle.load(f)
+        print(f"Loaded existing model from {model_path}")
+        return model
+    
+    print(f"Training new model...")
+    model = train_func(*args, **kwargs)
+    
+    # Save model
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    with open(model_path, 'wb') as f:
+        pickle.dump(model, f)
+    print(f"Saved new model to {model_path}")
+    return model
 
 #画图函数

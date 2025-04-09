@@ -15,6 +15,7 @@ from statsmodels.tsa.ar_model import AutoReg
 import pickle
 import logging
 from util import KalmanFilter, create_matrix_vectorized, RCR
+import os
 
    
 class MM_dstb:
@@ -229,17 +230,17 @@ class MM_dstb:
             cap_pred.append(self.cap_models.predict(start=self.t, end=self.t+t-1))
         return np.row_stack(cap_pred).reshape(t,1,self.k)
     
-
+def AR(x0, n, phi, sigma):
+# 假设是1阶AR
+    X = np.zeros(n)
+    X[0] = x0  # 设置初始值
+    epsilon = np.random.normal(loc=0, scale=sigma, size=n)
+    # 生成数据
+    for t in range(1, n):
+        X[t] = phi * X[t-1] + epsilon[t]
+    return X
+    
 def generate_data(t=300, seq=96, k=15, d=3,seed=42):
-    def AR(x0, n, phi, sigma):
-    # 假设是1阶AR
-        X = np.zeros(n)
-        X[0] = x0  # 设置初始值
-        epsilon = np.random.normal(loc=0, scale=sigma, size=n)
-        # 生成数据
-        for t in range(1, n):
-            X[t] = phi * X[t-1] + epsilon[t]
-        return X
     np.random.seed(seed)
     X = np.random.rand(t, seq, k, d)
     #X = np.row_stack((X,X))
@@ -263,136 +264,194 @@ def plot_ci(ci, k, xlabel = 'grid', ylabel = 'time step', title = 'capacity true
     plt.title(title)
 
 if __name__ == '__main__':
-    # from ec_data import reduce_size
-    from pathlib import Path
-    import os
-    import pandas as pd
-    import logging
     import argparse
     import datetime
-    import re
-    import itertools
+    import os
     
     parser = argparse.ArgumentParser(description='[MM model] Train MM model')
-    parser.add_argument('--city', type=str, default='dongying')
-    parser.add_argument('--plant_type', type=str, default='dstb_low_pv')
     parser.add_argument('--data_dir', type=str, default='./data')
-    # parser.add_argument('--start_date', type=str, default='20230801')
-    # parser.add_argument('--end_date', type=str, default='20240929')
     parser.add_argument('--train_day', type=int, default=None)
     parser.add_argument('--test_day', type=int, default=30)
     parser.add_argument('--resolution', type=float, default=0.2)
     parser.add_argument('--n_estimators', type=int, default=100)
     parser.add_argument('--max_depth', type=int, default=5)
     parser.add_argument('--boost_interval', type=int, default=1)
-    parser.add_argument('--optimize_cap_methed', type=str, default='KalmanFilter',
-                        choices=['KalmanFilter', 'l2', 'None'])
-    parser.add_argument('--optimize_cap_backward', type=bool, default=False)
     
     args = parser.parse_args()
 
-    city = args.city
-    plant_type = args.plant_type
-    data_dir = args.data_dir
-    # start_date = args.start_date
-    # end_date = args.end_date
-    test_day = args.test_day
-    train_day = args.train_day
-    resolution = args.resolution
-    n_estimator = args.n_estimators
-    max_depth = args.max_depth
-    boost_interval = args.boost_interval
-    optimize_cap_methed = args.optimize_cap_methed
-    dataset_dir = os.path.join(data_dir,'')
-    log_dir = os.path.join(data_dir,'logs/model/')
-    model_dir = os.path.join(data_dir,'model/')
-    
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
+    # Setup logging
+    log_dir = os.path.join(args.data_dir, 'logs/model/')
+    model_dir = os.path.join(args.data_dir, 'model/')
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(model_dir, exist_ok=True)
 
-    stream_handler = logging.StreamHandler()
-    file_handler = logging.FileHandler(os.path.join(log_dir, datetime.datetime.now().strftime('%Y%m%d%H%M%S')),
-                                       mode='a')
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s - %(levelname)s - %(message)s',
-                        handlers=[file_handler, stream_handler])
-                        
-    data_path = os.path.join(dataset_dir,f'{resolution}.npz')
-    
+    handlers = [
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.join(log_dir, datetime.datetime.now().strftime('%Y%m%d%H%M%S')))
+    ]
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+
+    # Load data
+    data_path = os.path.join(args.data_dir, f'{args.resolution}.npz')
     try:
         data = np.load(data_path)
         X, y, dates, grids = data['X'], data['y'], data['dates'], data['grids']
-        logging.info(f'read data from {data_path}')
+        logging.info(f'Read data from {data_path}')
     except:
-        logging.error(f'read data from {data_path} failed')
-        
+        logging.error(f'Failed to read data from {data_path}')
+        raise
+
+    # Prepare train/test split
     grid_num = len(grids)
-    if train_day is not None:
-        train_day = min(train_day,len(dates)-test_day)
-    else:
-        train_day = len(dates)-test_day
+    train_day = min(args.train_day, len(dates)-args.test_day) if args.train_day else len(dates)-args.test_day
     
-    train_X, train_y, test_X, test_y = X[len(dates) - train_day -test_day:-test_day,:,:,:], y[len(dates) - train_day -test_day:-test_day,:,:], X[-test_day:,:,:,:], y[-test_day:,:,:]
-    
-    logging.info(f"train_data range from: {str(dates[len(dates) - train_day])[:10]} to {str(dates[-test_day-1])[:10]},contain {train_day} days")
-    logging.info(f"test_data range from: {str(dates[-test_day])[:10]} to {str(dates[-1])[:10]},contain {test_day} days")
-    logging.info(f"resolution is: {resolution}, grid_num is {grid_num}")
+    train_X = X[len(dates) - train_day - args.test_day:-args.test_day,:,:,:]
+    train_y = y[len(dates) - train_day - args.test_day:-args.test_day,:,:]
+    test_X = X[-args.test_day:,:,:,:]
+    test_y = y[-args.test_day:,:,:]
 
-    model_path = os.path.join(model_dir,f'{train_day}_{test_day}_{resolution}_{n_estimator}_{max_depth}_{boost_interval}.pkl')
-
-    logging.info(f'MM train start!')
-    model = MM_dstb(n_estimator=n_estimator, max_depth=max_depth, boost_interval=boost_interval, fit_cap=True)
+    # Train model
+    logging.info('Training MM model...')
+    model = MM_dstb(n_estimator=args.n_estimators, 
+                    max_depth=args.max_depth, 
+                    boost_interval=args.boost_interval, 
+                    fit_cap=True)
     model.fit(train_X, train_y)
-    logging.info(f'MM train end!')
 
+    # Save model
+    model_path = os.path.join(model_dir, 
+                             f'{train_day}_{args.test_day}_{args.resolution}_' \
+                             f'{args.n_estimators}_{args.max_depth}_{args.boost_interval}.pkl')
     with open(model_path, 'wb') as f:
-        pickle.dump(model, f, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(model, f)
+    logging.info(f'Saved model to {model_path}')
 
-    logging.info(f'save MM model in {model_path}')
+    # Evaluate
     train_y_pred = model.predict(train_X)
     test_y_pred = model.predict(test_X)
-    logging.info(f'MM predict end!')
     
-    RCR_train = RCR(train_y.flatten(),np.sum((train_y_pred.reshape(-1,96,grid_num)*model.cap),axis=2).flatten(),1)
-    RCR_test = RCR(test_y.flatten(),np.sum((test_y_pred.reshape(-1,96,grid_num)*model.cap[-test_day:,:]),axis=2).flatten(),1)
-    logging.info(f'MM score train RCR:{RCR_train}, test RCR: {RCR_test}')
-
-    train_X_flatten,test_X_flatten = train_X.reshape(train_day*96,-1), test_X.reshape(test_day*96,-1)
-    train_X_mean,test_X_mean = np.mean(train_X,axis=2).reshape(train_day*96,-1), np.mean(test_X,axis=2).reshape(test_day*96,-1)
-
-    logging.info(f'flatten lgm train and predict!')
-    train_data = lgb.Dataset(train_X_flatten, label=train_y.flatten())
-    trees = lgb.train({
-        'objective': 'regression',
-        'max_depth': max_depth,
-        'learning_rate': 0.01,
-        'verbosity': -1,
-        'n_estimators': n_estimator}, train_data)
-
-    train_Y_pred_flatten= trees.predict(train_X_flatten)
-    test_Y_pred_flatten = trees.predict(test_X_flatten)
-    RCR_train_flatten = RCR(train_y.flatten(),train_Y_pred_flatten,1)
-    RCR_test_flatten = RCR(test_y.flatten(),test_Y_pred_flatten,1)
-    logging.info(f'flatten score train RCR:{RCR_train_flatten}, test RCR: {RCR_test_flatten}')
-
-    logging.info(f'mean lgm train and predict!')
-    train_data = lgb.Dataset(train_X_mean, label=train_y.flatten())
-    trees = lgb.train({
-        'objective': 'regression',
-        'max_depth': max_depth,
-        'learning_rate': 0.01,
-        'verbosity': -1,
-        'n_estimator': n_estimator}, train_data)
-
-    train_Y_pred_mean = trees.predict(train_X_mean)
-    test_Y_pred_mean = trees.predict(test_X_mean)
-
-    RCR_train_mean = RCR(train_y.flatten(),train_Y_pred_mean,1)
-    RCR_test_mean = RCR(test_y.flatten(),test_Y_pred_mean,1)
-    logging.info(f'mean score train RCR:{RCR_train_mean}, test RCR: {RCR_test_mean}')
+    train_score = RCR(train_y.flatten(), 
+                      np.sum((train_y_pred.reshape(-1,96,grid_num)*model.cap),axis=2).flatten(), 
+                      1)
+    test_score = RCR(test_y.flatten(),
+                     np.sum((test_y_pred.reshape(-1,96,grid_num)*model.cap[-args.test_day:,:]),axis=2).flatten(),
+                     1)
+    
+    logging.info(f'MM scores - Train RCR: {train_score:.4f}, Test RCR: {test_score:.4f}')
 
 
+def train_and_evaluate_model(X, y, ci, C, train_size=280, n_estimator=100, max_depth=3, lambda_1=1):
+    """Train and evaluate the boosting model with specified parameters"""
+    # Split data
+    k = X.shape[2]
+    train_X = X[:train_size,:,:,:]
+    train_y = y[:train_size,:,:]
+    train_C = C[:train_size,:,:]
+    train_ci = ci[:train_size,:,:]
+    test_X = X[train_size:,:,:,:]
+    test_y = y[train_size:,:,:]
+    test_C = C[train_size:,:,:]
+    test_ci = ci[train_size:,:,:]
 
+    # Initialize and train model
+    boosting_regressor = MM_dstb(n_estimator=n_estimator, 
+                                max_depth=max_depth, 
+                                boost_interval=5, 
+                                fit_cap=True, 
+                                lambda_1=lambda_1)
+    boosting_regressor.fit(train_X, train_y/train_C)
+    
+    # Generate predictions
+    train_y_pred = boosting_regressor.predict(train_X)
+    test_y_pred = boosting_regressor.predict(test_X)
+    pred_ci = boosting_regressor.cap.reshape(-1,k)/np.sum(boosting_regressor.cap.reshape(-1,k),axis=1,keepdims=True)
+    return {'model':boosting_regressor, 
+            'pred_y': test_y_pred, 
+            'test_y': test_y, 
+            'train_ci': train_ci, 
+            'train_C': train_C, 
+            'pred_ci': pred_ci, 
+            'test_C': test_C, 
+            'test_ci': test_ci}
+
+def plot_results(boosting_regressor, train_ci, train_C, k = 15):
+    """Plot capacity comparison between true and predicted values"""
+    fig = plt.figure(figsize=(13, 5))
+    
+    # Plot true capacity
+    plt.subplot(1,2,1)
+    plot_ci((train_ci/train_C), k)
+    
+    # Plot predicted capacity
+    capacity_pred = boosting_regressor.cap.reshape(-1,k)/np.sum(boosting_regressor.cap.reshape(-1,k),axis=1,keepdims=True)
+    plt.subplot(1,2,2)
+    plot_ci(capacity_pred, k, title='capacity pred')
+    
+    plt.tight_layout()
+    return fig
+
+
+def load_or_save_experiment(config):
+    """Load or run experiment based on configuration
+    
+    Args:
+        config: Dictionary containing:
+            - name: Name of model ('ar1' or 'kalman')
+            - model_params: Dictionary of model parameters
+            - data_params: Dictionary of data generation parameters including t, seq, k, d
+    """
+    # Model paths
+    model_params = config['model_params']
+    data_params = config['data_params']
+    model_path = f'./models/{config["name"]}_model_n{model_params["n_estimator"]}_l{model_params["lambda_1"]}_t{model_params["train_size"]}.pkl'
+    results_path = model_path.replace('.pkl', '_results.pkl')
+    
+    # Get dimensions from config
+    t, seq, k = data_params['t'], data_params['seq'], data_params['k']
+    
+    # Load or train
+    if os.path.exists(model_path):
+        with open(model_path, 'rb') as f:
+            model = pickle.load(f)
+            print(f"Loaded existing {config['name']} model from {model_path}")
+        
+        if not os.path.exists(results_path):
+            raise FileNotFoundError(f"Results file {results_path} does not exist")
+        with open(results_path, 'rb') as f:
+            results = pickle.load(f)
+        print(f"Loaded existing {config['name']} results from {results_path}")
+    else:
+        # Generate data based on model type
+        if config['name'] == 'kalman':
+            from kalman import generate_kalman_data
+            X, y, ci, C = generate_kalman_data(**data_params)
+        else:  # ar1
+            from ar1 import generate_data
+            X, y, ci, C = generate_data(**data_params)
+        
+        # Train new model
+        results = train_and_evaluate_model(X, y, ci, C, **model_params)
+        model = results['model']
+        
+        # Save model and results
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        with open(model_path, 'wb') as f:
+            pickle.dump(model, f)
+        print(f"Saved new {config['name']} model to {model_path}")
+
+        with open(results_path, 'wb') as f:
+            pickle.dump(results, f)
+        print(f"Saved {config['name']} results to {results_path}")
+    
+    return model, results, t, seq, k
+
+def calculate_aggregate_rmse(results, model, t, seq, k, train_size):
+    """Calculate RMSE for aggregate output"""
+    pred_sum = np.sum((results['pred_y'].reshape(-1, seq, k) * model.cap[train_size-t:,:]), axis=2).flatten()
+    true_norm = (results['test_y']/results['test_C']).flatten()
+    return np.sqrt(np.mean((pred_sum - true_norm) ** 2))
     
