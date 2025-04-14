@@ -6,4 +6,3 @@ results/*
 figures/*
 models/*
 *.txt
-*.npz
