@@ -1,8 +1,9 @@
 *.pptx
 *.pyc
-data/logs/model/*
+data/logs/*
 data/model/*
 results/*
 figures/*
 models/*
 *.txt
+*.npz

@@ -4,6 +4,7 @@ import logging
 import datetime
 from func import *
 
+print('a')
 CITY_A_CONFIG = {
         'name': 'city_a',
         'data_params': {
