@@ -1,6 +1,6 @@
 # Experiment for SolarBoost
 
-This is the code for SolarBoost, a boosting method for distributed photovoltaic power forecasting.
+This is the code for SolarBoost, a boosting method for distributed photovoltaic power forecasting, developed by DAMO Academy, Alibaba Group
 
 ## Quick Start Guide
 
