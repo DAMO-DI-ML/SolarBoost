@@ -6,7 +6,7 @@ from func import *
 AR1_CONFIG = {
     'name': 'ar1',
     'model_params': {
-        'n_estimator': 25,
+        'n_estimator': 1000,
         'lambda_1': 1,
         'train_size': 280
     },
@@ -27,7 +27,7 @@ def AR(x0, n, phi, sigma):
         X[t] = phi * X[t-1] + epsilon[t]
     return X
 
-def generate_data(t=300, seq=96, k=15, d=3, seed=42):
+def generate_ar_data(t=300, seq=96, k=15, d=3, seed=42):
     """Generate synthetic data for AR1 experiment"""
     np.random.seed(seed)
     
@@ -46,22 +46,32 @@ def generate_data(t=300, seq=96, k=15, d=3, seed=42):
     C = ci.sum(axis=2, keepdims=True)
 
     # Generate target values
-    y = np.sin(X[:,:,:,0]) + X[:,:,:,1] + X[:,:,:,2]**2
-    y = (y*ci).sum(axis=2, keepdims=True)
+    yi = np.sin(X[:,:,:,0]) + X[:,:,:,1] + X[:,:,:,2]**2
+    y = (yi*ci).sum(axis=2, keepdims=True)
     
-    return X, y, ci, C
+    return X, y, ci, C, yi
 
-def run_ar1_experiment():
+def run_ar1_experiment(goal = ['fig']):
     """Run AR1 experiment and return results"""
     # Load or run experiment
     model, results, t, seq, k = load_or_save_experiment(AR1_CONFIG)
     
     # Create plots
-    fig = plot_results(model, results['train_ci'], results['train_C'])
-    
-    rmse = calculate_aggregate_rmse(results, model, t, seq, k, AR1_CONFIG['model_params']['train_size'])
-    return rmse, fig
+    fig, rmse_y, rmse_y1, rmse_c, output,output_min,output_max,output_mean = None, None, None, None, None, None, None, None
+    if 'fig' in goal:
+        fig = plot_results(model, results['train_ci'], results['train_C'])
+    if 'rmse_y' in goal:
+        rmse_y = calculate_aggregate_rmse(results, model, t, seq, k, AR1_CONFIG['model_params']['train_size'])
+    if 'rmse_y1' in goal:
+        rmse_y1 = calculate_aggregate_rmse(results, model, t, seq, k, AR1_CONFIG['model_params']['train_size'], first = True)
+    if 'rmse_c' in goal:
+        rmse_c = calculate_capacity_rmse(results, k)
+    if 'output' in goal:
+        output = results['pred_y'].reshape(-1, seq, k)[:,:,0]
+        output_min = output.min()
+        output_max = output.max()
+        output_mean = output.mean()
+    results = {'fig': fig, 'rmse_y': rmse_y, 'rmse_y1': rmse_y1, 'rmse_c': rmse_c, 
+               'output_min': output_min, 'output_max': output_max, 'output_mean': output_mean}
+    return results
 
-def plot_ar1_results(model, ci, C):
-    # Return the figure from plot_results
-    return plot_results(model, ci, C)

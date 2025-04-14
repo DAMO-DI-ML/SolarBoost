@@ -1,17 +1,9 @@
 import numpy as np
-# from sklearn.tree import DecisionTreeRegressor
-# from sklearn.metrics import mean_squared_error as MSE
-# from scipy.optimize import minimize
-#from scipy.linalg import lstsq
-# from numpy.linalg import lstsq
-# from scipy.optimize import nnls
 from matplotlib import pyplot as plt
 import seaborn as sns
 from scipy.optimize import lsq_linear
 import lightgbm as lgb
-# from statsmodels.tsa.api import SimpleExpSmoothing
 from statsmodels.tsa.ar_model import AutoReg
-# from statsmodels.tsa.arima.model import ARIMA
 import pickle
 import logging
 from util import KalmanFilter, create_matrix_vectorized, RCR
@@ -20,14 +12,14 @@ import os
    
 class MM_dstb:
     def __init__(self, n_estimator=100, max_depth=3, boost_interval=10, fit_cap=True, lambda_1=1e3):
-        self.n_estimator = n_estimator #迭代最大步数
+        self.n_estimator = n_estimator
         self.max_depth = max_depth
         self.trees = []
         self.cap_models = []
-        self.end_threshold = 0.001 #停止条件
+        self.end_threshold = 0.001
         self.loss = []
         self.loss_capacity = []
-        self.boost_interval = boost_interval #每个基学习器拟合几棵树
+        self.boost_interval = boost_interval
         self.learning_rate = 0.01
         self.fit_cap = fit_cap
         self.X=None
@@ -51,7 +43,7 @@ class MM_dstb:
     def fit(self, X, y, capacity_init=None):
         # x [t,sqe,k,d]
         # y [t,sqe,1]
-        # C [t,1] 假设一个seq内装机不变
+        # C [t,1]
         self.t, self.seq, self.k, self.d = X.shape
         self.X, self.y = X, y
         self.init_ci(capacity_init)
@@ -112,15 +104,14 @@ class MM_dstb:
         if ci is None:
             return predictions
         else:
-            return np.sum(predictions*c_i,axis=2)
+            return np.sum(predictions*ci,axis=2)
     
     def custom_mse(self, yi, yi_pred):
-        """自定义均方误差损失函数"""
         yi = yi.reshape(self.t, self.seq, self.k)
         yi_pred = yi_pred.reshape(self.t, self.seq, self.k)
-        residual = np.sum(yi,axis=2, keepdims=True) - np.sum(self.cap*yi_pred, axis=2, keepdims=True)  # 计算残差
-        grad = -2 * residual*self.cap # 梯度
-        hess = np.repeat(2 *self.cap**2, self.seq, axis=1)  # Hessian
+        residual = np.sum(yi,axis=2, keepdims=True) - np.sum(self.cap*yi_pred, axis=2, keepdims=True)
+        grad = -2 * residual*self.cap
+        hess = np.repeat(2 *self.cap**2, self.seq, axis=1)
         return grad.flatten(), hess.flatten()
 
 
@@ -154,40 +145,11 @@ class MM_dstb:
             
         self.cap = np.maximum(alpha,0).reshape(self.cap.shape)
 
-    # def optimize_cap_KalmanFilter(self, residuals, residuals_pred):
-    #     #这里有个是要调一个优化方法，逐个时间点优化
-    #     constraints = {'type': 'eq', 'fun': lambda ci: np.sum(ci) - 1}
-    #     bounds = [(0,1)]*self.k
-    #     loss_capacity = 0
-    #     residuals,residuals_pred  = residuals.reshape(-1,self.seq,self.k), residuals_pred.reshape(-1,self.seq,self.k)
-    #     i = 0
-    #     while i < self.t:
-    #         def objective(c):
-    #             loss = self.up_bound(c,i)
-    #             return loss
-    #         loss_capacity += objective(self.cap[i,:,:])
-    #         if self.k > self.seq:
-    #             result = minimize(objective, self.cap[i,:,:].flatten(), constraints=constraints, bounds = bounds, method='SLSQP')
-    #         else:
-    #             result = minimize(objective, self.cap[i,:,:].flatten(), bounds = bounds, method='SLSQP')
-    #         if result.success == False or np.isnan(result.x).any():
-    #             logging.info(f"minimize False for t {i}")
-    #             if np.isnan(self.cap[i-1,:,:]).any() or i == 0:
-    #                 self.cap[i,:,:] = np.ones((1, 1, self.k))/ self.k
-    #             else:
-    #                 self.cap[i,:,:] = self.cap[i-1,:,:]
-    #         else:
-    #             self.cap[i,:,:] = result.x.reshape(1,1,self.k)
-    #         self.norm_ci(i)
-    #         i += 1
-    #     #self.KalmanFilter_cap()
-            
     def KalmanFilter_cap(self, r=0.001, p=0.9):
-        A = np.eye(self.k)  # 状态转移矩阵
-        H = np.eye(self.k)  # 观测矩阵
-        #Q = np.array([q]*self.k)  # 过程噪声协方差
+        A = np.eye(self.k)  # State transition matrix
+        H = np.eye(self.k)  # Observation matrix
         Q = (create_matrix_vectorized(self.k, p))*r**2
-        R = np.array([r**2]*self.k)  # 观测噪声协方差
+        R = np.array([r**2]*self.k)  
 
         kf = KalmanFilter(A, H, Q, R)
 
@@ -204,10 +166,8 @@ class MM_dstb:
             self.cap_models = [None]*self.k
         for i in range(self.k):
             data = self.cap[:,:,i].flatten()
-            #model = ARIMA(data, order=(1, 0, 1))
             model = AutoReg(data, lags=1)
             model= model.fit()
-            #第3步之后的预测值都是一样的？
             predictions = model.predict(start=1, end=self.t-1)
             self.cap[:,:,i] = np.concatenate((self.cap[0,:,i].reshape(1,1),predictions.reshape(-1,1)),axis=0)
             self.cap_models[i] = model
@@ -224,37 +184,22 @@ class MM_dstb:
         
         
     def predict_cap(self,t):
-        #预测装机，先假设和最后t时刻装机是一样的
         cap_pred = []
         for i in self.k:
             cap_pred.append(self.cap_models.predict(start=self.t, end=self.t+t-1))
         return np.row_stack(cap_pred).reshape(t,1,self.k)
     
 def AR(x0, n, phi, sigma):
-# 假设是1阶AR
+
     X = np.zeros(n)
-    X[0] = x0  # 设置初始值
+    X[0] = x0  
     epsilon = np.random.normal(loc=0, scale=sigma, size=n)
-    # 生成数据
+
     for t in range(1, n):
         X[t] = phi * X[t-1] + epsilon[t]
     return X
     
-def generate_data(t=300, seq=96, k=15, d=3,seed=42):
-    np.random.seed(seed)
-    X = np.random.rand(t, seq, k, d)
-    #X = np.row_stack((X,X))
 
-    #c_i = np.row_stack((np.array([1,2]*t),np.array([2,1]*t)))
-    ci = np.column_stack([AR(x, t, phi, 0.0001) for x, phi in zip(np.random.rand(2*k)[k:],np.random.normal(loc=1, scale=0.0001, size=k))])
-    # ci = np.random.rand(k).reshape(-1,k)
-    # ci = np.repeat(ci, t, axis=0)
-    ci = ci.reshape(t,1,k)
-    C = ci.sum(axis=2, keepdims=True)
-
-    y = np.sin(X[:,:,:,0]) + X[:,:,:,1] + X[:,:,:,2]**2 #+ np.random.normal(loc=0, scale=0.001, size=(t, k))
-    y = (y*ci).sum(axis=2,keepdims=True)
-    return X, y, ci, C
 
 
 def plot_ci(ci, k, xlabel = 'grid', ylabel = 'time step', title = 'capacity true'):
@@ -344,29 +289,30 @@ if __name__ == '__main__':
     logging.info(f'MM scores - Train RCR: {train_score:.4f}, Test RCR: {test_score:.4f}')
 
 
-def train_and_evaluate_model(X, y, ci, C, train_size=280, n_estimator=100, max_depth=3, lambda_1=1):
+def train_and_evaluate_model(X, y, ci, C, yi, train_size=280, test_size=None, n_estimator=100, max_depth=3, lambda_1=1,boost_interval = 5):
     """Train and evaluate the boosting model with specified parameters"""
     # Split data
-    k = X.shape[2]
-    train_X = X[:train_size,:,:,:]
-    train_y = y[:train_size,:,:]
-    train_C = C[:train_size,:,:]
-    train_ci = ci[:train_size,:,:]
-    test_X = X[train_size:,:,:,:]
-    test_y = y[train_size:,:,:]
-    test_C = C[train_size:,:,:]
-    test_ci = ci[train_size:,:,:]
+    t,seq,k = X.shape[:3]
 
+    train_X = X[:train_size,:,:,:] if test_size is None else X[:-test_size,:,:,:]
+    train_y = y[:train_size,:,:] if test_size is None else y[:-test_size,:,:]
+    train_C = C[:train_size,:,:] if C is not None else None
+    train_ci = ci[:train_size,:,:] if ci is not None else None
+    test_X = X[train_size:,:,:,:] if test_size is None else X[-test_size:,:,:,:]
+    test_y = y[train_size:,:,:] if test_size is None else y[-test_size:,:,:]
+    test_C = C[train_size:,:,:] if C is not None else None
+    test_ci = ci[train_size:,:,:] if ci is not None else None
+    test_yi = yi[train_size:,:,:] if yi is not None else None
     # Initialize and train model
     boosting_regressor = MM_dstb(n_estimator=n_estimator, 
                                 max_depth=max_depth, 
-                                boost_interval=5, 
+                                boost_interval=boost_interval, 
                                 fit_cap=True, 
                                 lambda_1=lambda_1)
-    boosting_regressor.fit(train_X, train_y/train_C)
+    train_y_norm = train_y/train_C if train_C is not None else train_y
+    boosting_regressor.fit(train_X, train_y_norm)
     
     # Generate predictions
-    train_y_pred = boosting_regressor.predict(train_X)
     test_y_pred = boosting_regressor.predict(test_X)
     pred_ci = boosting_regressor.cap.reshape(-1,k)/np.sum(boosting_regressor.cap.reshape(-1,k),axis=1,keepdims=True)
     return {'model':boosting_regressor, 
@@ -376,7 +322,11 @@ def train_and_evaluate_model(X, y, ci, C, train_size=280, n_estimator=100, max_d
             'train_C': train_C, 
             'pred_ci': pred_ci, 
             'test_C': test_C, 
-            'test_ci': test_ci}
+            'test_ci': test_ci,
+            'test_yi': test_yi,
+            't': t,
+            'seq': seq,
+            'k': k}
 
 def plot_results(boosting_regressor, train_ci, train_C, k = 15):
     """Plot capacity comparison between true and predicted values"""
@@ -411,7 +361,9 @@ def load_or_save_experiment(config):
     results_path = model_path.replace('.pkl', '_results.pkl')
     
     # Get dimensions from config
-    t, seq, k = data_params['t'], data_params['seq'], data_params['k']
+    t,seq,k = None,None,None
+    if 'city' not in config['name']:
+        t, seq, k = data_params['t'], data_params['seq'], data_params['k']
     
     # Load or train
     if os.path.exists(model_path):
@@ -425,16 +377,21 @@ def load_or_save_experiment(config):
             results = pickle.load(f)
         print(f"Loaded existing {config['name']} results from {results_path}")
     else:
+        X, y, ci, C, yi = None, None, None, None, None
         # Generate data based on model type
         if config['name'] == 'kalman':
             from kalman import generate_kalman_data
-            X, y, ci, C = generate_kalman_data(**data_params)
-        else:  # ar1
-            from ar1 import generate_data
-            X, y, ci, C = generate_data(**data_params)
+            X, y, ci, C, yi = generate_kalman_data(**data_params)
+        elif config['name'] == 'ar1':
+            from ar1 import generate_ar_data
+            X, y, ci, C, yi = generate_ar_data(**data_params)
+        elif config['name'] == 'city_a':
+            from city_a import load_city_a_data
+            X, y, dates, grids = load_city_a_data(data_params)
+            t,seq,k = X.shape[:3]
         
         # Train new model
-        results = train_and_evaluate_model(X, y, ci, C, **model_params)
+        results = train_and_evaluate_model(X, y, ci, C, yi,**model_params)
         model = results['model']
         
         # Save model and results
@@ -449,9 +406,27 @@ def load_or_save_experiment(config):
     
     return model, results, t, seq, k
 
-def calculate_aggregate_rmse(results, model, t, seq, k, train_size):
+def calculate_aggregate_rmse(results, model, t, seq, k, train_size, first = False):
     """Calculate RMSE for aggregate output"""
-    pred_sum = np.sum((results['pred_y'].reshape(-1, seq, k) * model.cap[train_size-t:,:]), axis=2).flatten()
-    true_norm = (results['test_y']/results['test_C']).flatten()
+    if t is None:
+        t = results['t']
+    if seq is None:
+        seq = results['seq']
+    if k is None:
+        k = results['k']
+    if train_size is None:
+        train_size = t-results['test_y'].shape[0]
+    if results['test_C'] is None:
+        results['test_C'] = 1
+    if first:
+        pred_sum = (results['pred_y'].reshape(-1, seq, k) * model.cap[train_size-t:,:])[:,:,0]
+        true_norm = (results['test_yi']/results['test_C'])[:,:,0]
+    else:
+        pred_sum = np.sum((results['pred_y'].reshape(-1, seq, k) * model.cap[train_size-t:,:]), axis=2).flatten()
+        true_norm = (results['test_y']/results['test_C']).flatten()
     return np.sqrt(np.mean((pred_sum - true_norm) ** 2))
-    
+
+def calculate_capacity_rmse(results, k):
+    capacity_pred = results['model'].cap.reshape(-1,k)/np.sum(results['model'].cap.reshape(-1,k),axis=1,keepdims=True)
+    capacity_true = (results['train_ci']/results['train_C']).reshape(-1,k)
+    return np.sqrt(np.mean((capacity_pred - capacity_true) ** 2))
