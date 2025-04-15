@@ -2,7 +2,7 @@
 
 <!-- [![Made by DAMO Academy](https://img.shields.io/badge/Made%20by-DAMO%20Academy-blue)](https://damo.alibaba.com) -->
 
-SolarBoost is an advanced boosting method for distributed photovoltaic (PV) power forecasting, developed by DAMO Academy, Alibaba Group. This repository contains the implementation and experimental code for the SolarBoost algorithm.
+SolarBoost is an advanced boosting method for distributed photovoltaic (DPV) power forecasting, developed by DAMO Academy, Alibaba Group. This repository contains the implementation and experimental code for the SolarBoost algorithm.
 
 ## Features
 
